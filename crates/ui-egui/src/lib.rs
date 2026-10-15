@@ -562,10 +562,12 @@ impl SheetApp {
         }
     }
 
-    fn submit_print(&mut self, params: Json) -> Result<Json, String> {
+    fn submit_print(&mut self, mut params: Json) -> Result<Json, String> {
         if self.services.print_native.is_some() && !self.printing.ready() {
             return Err("Select an available printer in File > Print before submitting.".into());
         }
+        // A driver may ignore the monochrome hint, so the PDF itself is gray when Grayscale is ticked.
+        params["grayscale"] = json!(self.services.print_native.is_some() && self.printing.settings.grayscale);
         let pdf = self.run("file.print", params)?;
         let encoded = pdf.get("base64").and_then(Json::as_str).ok_or("The print command did not produce a PDF.")?;
         let bytes = gridcraft_engine::io::base64_decode(encoded).ok_or("Couldn't decode the generated PDF.")?;
@@ -586,14 +588,25 @@ impl SheetApp {
         self.network.selected && self.services.network_print.is_some()
     }
 
+    /// Whether the pages print gray: the chosen destination's Grayscale choice (a queue's box, or the
+    /// network printer's Color setting). The Print preview and the PDF that is sent both follow it.
+    pub fn print_grayscale(&self) -> bool {
+        if self.network_selected() {
+            self.network.state.draft.request(None).color == Some(printing::net::ColorMode::Monochrome)
+        } else {
+            self.services.print_native.is_some() && self.printing.settings.grayscale
+        }
+    }
+
     /// Builds the selected sheets' print-ready PDF and sends it to the queried network printer on a
     /// worker, following the job. Needs the ticked confirmation (craft-ui spends it); returns the
     /// reason it did not start otherwise. `pages` and `media` describe the sheets sent.
-    pub fn print_network(&mut self, params: Json, pages: Option<u32>, media: Option<&str>) -> Result<(), String> {
+    pub fn print_network(&mut self, mut params: Json, pages: Option<u32>, media: Option<&str>) -> Result<(), String> {
         let Some(net) = &self.services.network_print else { return Err("Network printing is unavailable here.".into()) };
         if self.network.state.draft.block((net.validate)(&self.network.state.draft.normalized_url()).is_ok(), true, net.formats).is_some() {
             return Err("Query the printer and tick the confirmation before printing.".into());
         }
+        params["grayscale"] = json!(self.print_grayscale());
         let pdf = self.run("file.print", params)?;
         let encoded = pdf.get("base64").and_then(Json::as_str).ok_or("The print command did not produce a PDF.")?;
         let bytes = gridcraft_engine::io::base64_decode(encoded).ok_or("Couldn't decode the generated PDF.")?;
@@ -602,6 +615,9 @@ impl SheetApp {
         let address = self.network.state.draft.normalized_url();
         let send = (net.send)(printing::NetworkJob { name, pdf: std::sync::Arc::new(bytes), confirmed: self.network.state.draft.confirmed });
         self.network.state.draft.expected_pages = pages;
+        // A paper size goes along only when the printer lists it: a printer that did not say what it
+        // holds gets no media request, so the job cannot be refused for a size it never listed.
+        let media = media.filter(|_| matches!(self.network.state.draft.media_state(), printing::Capability::Supported(_)));
         if self.network.state.start_job(&send, (net.validate)(&address).is_ok(), true, net.formats, media) {
             Ok(())
         } else {

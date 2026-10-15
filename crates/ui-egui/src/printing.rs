@@ -1,6 +1,5 @@
 //! Localized print-page wording around the shared, backend-independent controls.
 pub use craft_ui::capability::Capability;
-use craft_ui::printing::Labels;
 pub use craft_ui::printing::network as net;
 pub use craft_ui::printing::{Discover, Duplex, Feedback, Printer, Settings, State, Submit};
 
@@ -89,7 +88,7 @@ pub fn network_labels(l: Language) -> net::Labels<'static> {
         photo: l.tr("Photo"),
         color: l.tr("Color:"),
         color_color: l.tr("Colour"),
-        color_monochrome: l.tr("Black and white"),
+        color_monochrome: l.tr("Grayscale"),
         resolution: l.tr("Resolution:"),
         resolution_dpi: "{dpi} dpi",
         resolution_dpi_xy: "{x} x {y} dpi",
@@ -98,7 +97,7 @@ pub fn network_labels(l: Language) -> net::Labels<'static> {
         unsupported_sides: l.tr("This printer only prints one-sided."),
         unsupported_orientation: l.tr("This printer does not take an orientation setting."),
         unsupported_quality: l.tr("This printer does not take a quality setting."),
-        unsupported_color: l.tr("This printer only prints in black and white."),
+        unsupported_color: l.tr("This printer only prints in grayscale."),
         unsupported_resolution: l.tr("This printer does not take a resolution setting."),
         unconfirmed_note: l.tr("Not confirmed by the printer"),
         confirm: l.tr("I confirm sending this document to this printer"),
@@ -154,24 +153,108 @@ pub fn network_notice(view: &net::JobView, labels: &net::Labels<'_>) -> Option<S
     }
 }
 
-pub fn show(state: &mut State, ui: &mut egui::Ui, discover: &Discover, translate: impl Fn(&str) -> String) {
-    let labels = Labels {
-        printer: &translate("Printer"),
-        select_printer: &translate("Select a printer"),
-        refresh: &translate("Refresh printers"),
-        copies: &translate("Copies"),
-        duplex: &translate("Two-sided printing"),
-        printer_default: &translate("Printer default"),
-        one_sided: &translate("One-sided"),
-        long_edge: &translate("Two-sided: long edge"),
-        short_edge: &translate("Two-sided: short edge"),
-        grayscale: &translate("Grayscale"),
-    };
-    state.show(ui, egui::Id::new("gridcraft_print_settings"), discover, &labels);
+/// The Print page's printer controls: ONE Printer list holding the system's queues (the default
+/// first and marked) and, where the host can send to the network, a final "Network printer…" entry
+/// (`network` is that entry's selected flag). Choosing a queue clears the flag; choosing the entry sets
+/// it, and the caller then draws the network section instead of the local options. The local options
+/// (copies, two-sided, grayscale) are drawn only while a queue is chosen.
+pub fn show(
+    state: &mut State,
+    ui: &mut egui::Ui,
+    discover: &Discover,
+    mut network: Option<&mut bool>,
+    locked: bool,
+    translate: impl Fn(&str) -> String,
+) {
+    if state.printers.is_empty() && state.message.is_none() && !state.discovering() {
+        state.refresh(discover);
+    }
+    state.poll(ui.ctx());
+    ui.push_id(egui::Id::new("gridcraft_print_settings"), |ui| {
+        ui.add_enabled_ui(!state.busy() && !locked, |ui| {
+            let width = ui.available_width().clamp(32.0, 230.0);
+            let network_chosen = network.as_deref().is_some_and(|chosen| *chosen);
+            let network_label = translate(NETWORK_ENTRY);
+            let printer_label = ui.label(translate("Printer"));
+            let shown = if network_chosen {
+                network_label.clone()
+            } else if state.settings.printer.is_empty() {
+                translate("Select a printer")
+            } else {
+                state.settings.printer.clone()
+            };
+            let mut order: Vec<&Printer> = state.printers.iter().collect();
+            order.sort_by_key(|printer| !printer.default);
+            let mut chosen = None;
+            egui::ComboBox::from_id_salt("printer")
+                .width(width)
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for printer in order {
+                        let text = if printer.default { format!("{} ({})", printer.name, translate("default")) } else { printer.name.clone() };
+                        if ui.selectable_label(!network_chosen && state.settings.printer == printer.name, text).clicked() {
+                            chosen = Some(printer.name.clone());
+                        }
+                    }
+                    if network.is_some() && ui.selectable_label(network_chosen, &network_label).clicked() {
+                        chosen = Some(String::new());
+                    }
+                })
+                .response
+                .labelled_by(printer_label.id);
+            match (chosen, network.as_deref_mut()) {
+                (Some(name), Some(flag)) if name.is_empty() => *flag = true,
+                (Some(name), flag) => {
+                    state.settings.printer = name;
+                    if let Some(flag) = flag {
+                        *flag = false;
+                    }
+                }
+                (None, _) => {}
+            }
+            if ui.add_enabled(!state.discovering(), egui::Button::new(translate("Refresh printers"))).clicked() {
+                state.refresh(discover);
+            }
+            if network.as_deref().is_some_and(|chosen| *chosen) {
+                return;
+            }
+            ui.horizontal(|ui| {
+                let label = ui.label(translate("Copies"));
+                ui.add(egui::DragValue::new(&mut state.settings.copies).range(1..=999)).labelled_by(label.id);
+            });
+            let default = translate("Printer default");
+            let one_sided = translate("One-sided");
+            let long_edge = translate("Two-sided: long edge");
+            let short_edge = translate("Two-sided: short edge");
+            let choices = [
+                (None, default.as_str()),
+                (Some(Duplex::Off), one_sided.as_str()),
+                (Some(Duplex::LongEdge), long_edge.as_str()),
+                (Some(Duplex::ShortEdge), short_edge.as_str()),
+            ];
+            let duplex_label = ui.label(translate("Two-sided printing"));
+            egui::ComboBox::from_id_salt("duplex")
+                .width(width)
+                .wrap_mode(egui::TextWrapMode::Truncate)
+                .selected_text(choices.iter().find(|(value, _)| *value == state.settings.duplex).map_or(default.as_str(), |(_, text)| *text))
+                .show_ui(ui, |ui| {
+                    for (value, text) in choices {
+                        ui.selectable_value(&mut state.settings.duplex, value, text);
+                    }
+                })
+                .response
+                .labelled_by(duplex_label.id);
+            ui.checkbox(&mut state.settings.grayscale, translate("Grayscale"));
+        });
+    });
     if let Some(message) = &state.message {
         ui.label(feedback(message, translate));
     }
 }
+
+/// The Printer list's last entry (the English text is also its catalog key).
+pub const NETWORK_ENTRY: &str = "Network printer…";
 
 /// Read print settings/status, or validate an explicit update before changing anything.
 /// `refresh: true` starts discovery only; this command never submits a job or opens a dialog.

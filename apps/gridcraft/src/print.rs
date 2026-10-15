@@ -34,25 +34,34 @@ fn named_receipt(printer: &str, receipt: &str) -> String {
     }
 }
 
+/// The job for a local queue. A sheet's page size is the workbook's own (Page Setup's Letter by
+/// default), not a paper the person picked on the Print page, so the job never demands it: it goes on
+/// the queue's own default paper and is shrunk to fit when it is larger, instead of being refused
+/// ("has no 13.33 x 7.50 inch paper") by a queue that does not list that size. The PDF is already
+/// gray when Grayscale is ticked; `grayscale` is also the driver's monochrome hint.
+fn local_job(settings: Settings) -> craft_print::Job {
+    craft_print::Job {
+        printer: Some(settings.printer),
+        copies: settings.copies.clamp(1, 999),
+        duplex: settings.duplex.map(|value| match value {
+            Duplex::LongEdge => craft_print::Duplex::LongEdge,
+            Duplex::ShortEdge => craft_print::Duplex::ShortEdge,
+            Duplex::Off => craft_print::Duplex::Off,
+        }),
+        grayscale: settings.grayscale,
+        scaling: craft_print::Scaling::ShrinkToFit,
+        title: "GridCraft document".into(),
+        ..Default::default()
+    }
+}
+
 pub fn submit() -> Submit {
     Box::new(|bytes, settings: Settings| {
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new().name("print-submit".into()).spawn(move || {
             // The status names the printer: "Print job submitted: Office Laser".
             let printer = settings.printer.clone();
-            let job = craft_print::Job {
-                printer: Some(settings.printer),
-                copies: settings.copies.clamp(1, 999),
-                duplex: settings.duplex.map(|value| match value {
-                    Duplex::LongEdge => craft_print::Duplex::LongEdge,
-                    Duplex::ShortEdge => craft_print::Duplex::ShortEdge,
-                    Duplex::Off => craft_print::Duplex::Off,
-                }),
-                grayscale: settings.grayscale,
-                scaling: craft_print::Scaling::ShrinkToFit,
-                title: "GridCraft document".into(),
-                ..Default::default()
-            };
+            let job = local_job(settings);
             let result = craft_print::submit(&bytes, &job).map(|receipt| named_receipt(&printer, &receipt)).map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
@@ -73,6 +82,16 @@ mod tests {
         assert_eq!(named_receipt("Office Laser", ""), "Office Laser");
         assert_eq!(named_receipt("Office Laser", "job 7"), "Office Laser: job 7");
         assert_eq!(named_receipt("", "job 7"), "job 7");
+    }
+
+    #[test]
+    fn a_local_job_uses_the_queues_own_paper_and_carries_the_settings() {
+        let job = local_job(Settings { printer: "Office Laser".into(), copies: 2, duplex: Some(Duplex::LongEdge), grayscale: true });
+        assert_eq!(job.scaling, craft_print::Scaling::ShrinkToFit, "no exact paper is demanded of the queue");
+        assert!(job.options.is_empty(), "no paper size or other driver option is sent");
+        assert_eq!(job.printer.as_deref(), Some("Office Laser"));
+        assert_eq!((job.copies, job.duplex, job.grayscale), (2, Some(craft_print::Duplex::LongEdge), true));
+        assert_eq!(local_job(Settings { copies: 0, ..Default::default() }).copies, 1);
     }
 
     #[test]

@@ -10,9 +10,6 @@
 //! * **Nothing connects on its own.** No discovery, no multicast. The registry asks the printer only
 //!   when the person presses Query printer, and sends a document only after the ticked confirmation
 //!   ([`UserConfirmed`], taken from the box and from nothing else).
-//! * **The deny list** (`CRAFT_PRINT_DENY`, or the legacy `PDFCRAFT_PRINT_DENY`) is the registry's: a
-//!   denied printer is refused before any backend is asked, by address and again by the name it
-//!   reports. [`validate`] refuses a denied address before it is ever queried.
 //! * **Two phases.** The worker reports *accepted* as soon as the printer has the document, then
 //!   follows the job with craft-print's `JobWatch`, reporting each new status until it ends. A
 //!   document is sent once: a send whose outcome is unknown is shown with the request to check the
@@ -79,11 +76,8 @@ fn policy(why: impl Into<String>) -> Failure {
 }
 
 /// The address checked against the network policy (a numeric loopback, link-local or private
-/// address; no TLS) and the deny list. The error is what the dialog shows under the field.
-fn validate_denying(text: &str, denied: &[String]) -> Result<(), Failure> {
-    if craft_print::any_denied(&[text], denied) {
-        return Err(policy(format!("the printer is on the deny list ({}); nothing was sent to it", craft_print::DENY_ENV)));
-    }
+/// address; no TLS). The error is what the dialog shows under the field.
+fn validate(text: &str) -> Result<(), Failure> {
     match Protocol::of(text) {
         Protocol::Wsd => PrinterUrl::parse(text).map(|_| ()).map_err(|e| policy(e.to_string())),
         Protocol::Ipp => PrinterUri::parse(text).map(|_| ()).map_err(|e| policy(e.to_string())),
@@ -96,12 +90,10 @@ struct Open {
     id: String,
 }
 
-/// Open the printer at `address`: nothing connects. `deny`: the deny list to apply instead of the
-/// environment's (tests); `None` reads the environment on every call.
-fn open(address: &str, transport: Option<Transport>, deny: Option<Vec<String>>) -> Result<Open, PrintError> {
+/// Open the printer at `address`: nothing connects.
+fn open(address: &str, transport: Option<Transport>) -> Result<Open, PrintError> {
     let protocol = Protocol::of(address);
     let registry = Registry::new();
-    registry.set_deny_list(deny);
     let (native, backend): (String, Box<dyn craft_print::backends::Backend>) = match protocol {
         Protocol::Wsd => {
             let mut backend = WsdBackend::new();
@@ -129,7 +121,6 @@ fn failure(e: &PrintError, open: bool) -> Failure {
         FailureKind::Encode
     } else {
         match e.kind() {
-            ErrorKind::Denied => FailureKind::Policy,
             ErrorKind::InvalidRequest if open => FailureKind::Policy,
             ErrorKind::InvalidRequest | ErrorKind::ConsentRequired => FailureKind::Invalid,
             ErrorKind::UnsupportedFormat => FailureKind::NoCommonFormat,
@@ -212,13 +203,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The worker that asks the printer at the (normalised) address what it is and what it lists. It
-/// sends no job; a denied printer is refused before it is asked.
-fn query_printer(transport: Option<Transport>, ctx: Option<egui::Context>, queried: Queried, deny: Option<Vec<String>>) -> QueryPrinter {
+/// sends no job.
+fn query_printer(transport: Option<Transport>, ctx: Option<egui::Context>, queried: Queried) -> QueryPrinter {
     Box::new(move |address: &str| {
         let (tx, rx) = mpsc::channel();
-        let (address, transport, ctx, queried, deny) = (address.to_owned(), transport.clone(), ctx.clone(), Arc::clone(&queried), deny.clone());
+        let (address, transport, ctx, queried) = (address.to_owned(), transport.clone(), ctx.clone(), Arc::clone(&queried));
         std::thread::spawn(move || {
-            let result = match open(&address, transport, deny) {
+            let result = match open(&address, transport) {
                 Ok(printer) => printer
                     .registry
                     .printer_details(&printer.id)
@@ -329,18 +320,17 @@ fn send_job(
     pdf: Arc<Vec<u8>>,
     queried: Queried,
     confirmed: UserConfirmed,
-    deny: Option<Vec<String>>,
 ) -> SendJob {
     Box::new(move |address: &str, request: Request| {
         let (result_tx, result_rx) = mpsc::channel();
         let (update_tx, update_rx) = mpsc::channel();
         let cancel = CancelToken::new();
-        let (address, transport, ctx, deny) = (address.to_owned(), transport.clone(), ctx.clone(), deny.clone());
+        let (address, transport, ctx) = (address.to_owned(), transport.clone(), ctx.clone());
         let (name, pdf, worker_cancel) = (name.clone(), Arc::clone(&pdf), cancel.clone());
         let known = lock(&queried).as_ref().filter(|(a, _)| *a == address).map(|(_, d)| d.clone());
         std::thread::spawn(move || {
             let (job, options) = options(&request, &name);
-            let result = run_job(&address, transport, deny, (job, options), &pdf, known, confirmed, &worker_cancel, &update_tx, &ctx);
+            let result = run_job(&address, transport, (job, options), &pdf, known, confirmed, &worker_cancel, &update_tx, &ctx);
             let _ = result_tx.send(result);
             repaint(&ctx);
         });
@@ -352,7 +342,6 @@ fn send_job(
 fn run_job(
     address: &str,
     transport: Option<Transport>,
-    deny: Option<Vec<String>>,
     (job, options): (Job, JobOptions),
     pdf: &Arc<Vec<u8>>,
     known: Option<PrinterDetails>,
@@ -361,7 +350,7 @@ fn run_job(
     updates: &mpsc::Sender<JobUpdate>,
     ctx: &Option<egui::Context>,
 ) -> Result<Report, Failure> {
-    let printer = open(address, transport, deny).map_err(|e| failure(&e, true))?;
+    let printer = open(address, transport).map_err(|e| failure(&e, true))?;
     let printer_name = known.as_ref().map(|d| d.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| address.to_owned());
     let job = Job { printer: Some(printer.id.clone()), ..job };
     // What the person was shown is what the registry decides on: no second read for the format.
@@ -410,20 +399,19 @@ fn refused(failure: Failure) -> SendJob {
 }
 
 /// The services the Print page's network destination needs. `transport` replaces the plain-HTTP one
-/// (tests; embedding); `deny` replaces the environment's deny list (tests).
-pub fn service(ctx: Option<egui::Context>, transport: Option<Transport>, deny: Option<Vec<String>>) -> Network {
+/// (tests; embedding).
+pub fn service(ctx: Option<egui::Context>, transport: Option<Transport>) -> Network {
     let queried = Queried::default();
-    let query = query_printer(transport.clone(), ctx.clone(), Arc::clone(&queried), deny.clone());
+    let query = query_printer(transport.clone(), ctx.clone(), Arc::clone(&queried));
     let send = {
-        let (queried, deny) = (Arc::clone(&queried), deny.clone());
+        let queried = Arc::clone(&queried);
         move |job: NetworkJob| match UserConfirmed::attest(Some(job.confirmed)) {
             // The attestation comes from the ticked box and nothing else.
-            Ok(confirmed) => send_job(transport.clone(), ctx.clone(), job.name, job.pdf, Arc::clone(&queried), confirmed, deny.clone()),
+            Ok(confirmed) => send_job(transport.clone(), ctx.clone(), job.name, job.pdf, Arc::clone(&queried), confirmed),
             Err(e) => refused(failure(&e, false)),
         }
     };
-    let validate = move |text: &str| validate_denying(text, &deny.clone().unwrap_or_else(craft_print::deny_list));
-    Network { validate: Box::new(validate), query, send: Box::new(send), formats: FORMATS }
+    Network { validate: Box::new(|text: &str| validate(text)), query, send: Box::new(send), formats: FORMATS }
 }
 
 #[cfg(test)]
@@ -469,20 +457,14 @@ mod tests {
     }
 
     #[test]
-    fn only_numeric_local_addresses_are_accepted_and_the_deny_list_wins() {
-        let none: Vec<String> = Vec::new();
+    fn only_numeric_local_addresses_are_accepted() {
         for ok in [ADDRESS, "http://192.168.1.50:5357/service", "http://169.254.1.2/x", "ipp://10.0.0.7/ipp/print"] {
-            assert!(validate_denying(ok, &none).is_ok(), "{ok}");
+            assert!(validate(ok).is_ok(), "{ok}");
         }
         for refused in ["http://printer.local/service", "http://8.8.8.8/service", "ipps://10.0.0.7/ipp/print", "http://example.com/ipp/print", ""] {
-            let failure = validate_denying(refused, &none).expect_err(refused);
+            let failure = validate(refused).expect_err(refused);
             assert_eq!(failure.kind, FailureKind::Policy, "{refused}");
         }
-        let deny = craft_print::parse_deny_list("brother;0f1e2d3c1111");
-        let failure = validate_denying("http://192.168.1.50:5357/0f1e2d3c-1111-4222", &deny).expect_err("denied");
-        assert_eq!(failure.kind, FailureKind::Policy);
-        assert!(failure.detail.contains("CRAFT_PRINT_DENY") && !failure.detail.contains("0f1e"), "{}", failure.detail);
-        assert!(validate_denying("http://192.168.1.50:5357/office", &deny).is_ok());
     }
 
     #[test]
@@ -517,7 +499,7 @@ mod tests {
     #[test]
     fn a_query_reads_the_printer_and_sends_no_job() {
         let printer = FakePrinter::new(FakeConfig::default());
-        let network = service(None, Some(transport(&printer)), Some(Vec::new()));
+        let network = service(None, Some(transport(&printer)));
         let summary = summary_of(&network, ADDRESS).expect("queried");
         assert!(summary.caps.formats.iter().any(|f| f == "application/pdf"), "{:?}", summary.caps.formats);
         assert_eq!(summary.color, Some(true));
@@ -529,7 +511,7 @@ mod tests {
     #[test]
     fn a_confirmed_job_is_sent_followed_and_reported_with_the_printers_name() {
         let printer = FakePrinter::new(FakeConfig::default());
-        let network = service(None, Some(transport(&printer)), Some(Vec::new()));
+        let network = service(None, Some(transport(&printer)));
         let summary = summary_of(&network, ADDRESS).expect("queried");
         let request = Request { copies: Some(2), sides: Some(net::Sides::LongEdge), expected_pages: Some(1), ..Request::default() };
         let (updates, result) = finish((network.send)(job(true))(ADDRESS, request));
@@ -546,28 +528,16 @@ mod tests {
     #[test]
     fn a_job_without_the_confirmation_is_refused_before_anything_is_sent() {
         let printer = FakePrinter::new(FakeConfig::default());
-        let network = service(None, Some(transport(&printer)), Some(Vec::new()));
+        let network = service(None, Some(transport(&printer)));
         let (_, result) = finish((network.send)(job(false))(ADDRESS, Request::default()));
         assert_eq!(result.expect_err("unconfirmed").kind, FailureKind::Invalid);
         assert!(printer.log().is_empty(), "nothing reached the printer");
     }
 
     #[test]
-    fn a_denied_printer_is_never_asked_and_never_sent_a_job() {
-        let printer = FakePrinter::new(FakeConfig::default());
-        let deny = Some(craft_print::parse_deny_list("127.0.0.1"));
-        let network = service(None, Some(transport(&printer)), deny);
-        let query = summary_of(&network, ADDRESS).expect_err("denied");
-        assert_eq!(query.kind, FailureKind::Policy);
-        let (_, result) = finish((network.send)(job(true))(ADDRESS, Request::default()));
-        assert_eq!(result.expect_err("denied").kind, FailureKind::Policy);
-        assert!(printer.log().is_empty(), "the registry refused before any request: {:?}", printer.actions());
-    }
-
-    #[test]
     fn a_printer_that_lists_no_pdf_is_refused_before_a_job_exists() {
         let printer = FakePrinter::new(FakeConfig { formats: vec!["image/pwg-raster"], ..FakeConfig::default() });
-        let network = service(None, Some(transport(&printer)), Some(Vec::new()));
+        let network = service(None, Some(transport(&printer)));
         let summary = summary_of(&network, ADDRESS).expect("queried");
         assert!(!summary.takes_any(network.formats), "craft-ui blocks Print for this printer");
         let (_, result) = finish((network.send)(job(true))(ADDRESS, Request::default()));
@@ -578,7 +548,7 @@ mod tests {
     #[test]
     fn a_printer_that_aborts_the_job_is_reported_as_stopped() {
         let printer = FakePrinter::new(FakeConfig { ending: Ending::Aborts("AbortedBySystem"), ..FakeConfig::default() });
-        let network = service(None, Some(transport(&printer)), Some(Vec::new()));
+        let network = service(None, Some(transport(&printer)));
         summary_of(&network, ADDRESS).expect("queried");
         let (_, result) = finish((network.send)(job(true))(ADDRESS, Request::default()));
         assert_eq!(result.expect("accepted").outcome, Outcome::Aborted);
@@ -589,8 +559,7 @@ mod tests {
     #[test]
     fn the_app_prints_its_workbook_to_a_network_printer() {
         let printer = FakePrinter::new(FakeConfig::default());
-        let services =
-            gridcraft_ui_egui::Services { network_print: Some(service(None, Some(transport(&printer)), Some(Vec::new()))), ..Default::default() };
+        let services = gridcraft_ui_egui::Services { network_print: Some(service(None, Some(transport(&printer)))), ..Default::default() };
         let mut app = gridcraft_ui_egui::SheetApp::new(gridcraft_engine::Session::new(), services);
         app.run("file.new", json!({})).expect("a workbook");
         app.run("cell.set", json!({"cell": "A1", "input": "network print"})).expect("cell set");

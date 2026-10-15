@@ -14,7 +14,7 @@ The hardware Excel uses, per platform, against GridCraft. Part of
 | Multiple windows and monitors | One window per workbook, New Window for the same workbook, per-monitor DPI | One window; multiple workbooks switch inside it (#162; PR #171) | Native window per workbook, New Window, Arrange All across monitors: 6–8 h |
 | High-DPI and display scaling | yes | yes (display scale matched to desktop density; View › Interface size 75–200 % on top, #230) | — |
 | Accessibility hardware (screen readers, braille displays, switch control) | Narrator, JAWS, NVDA, VoiceOver | AccessKit enabled in eframe; grid cells and ribbon not yet exposed as an accessible tree | Counted under UI ([ui-parity.md](ui-parity.md)) |
-| Printers | System print with driver options | Desktop submits through craft-print with printer choice, copies, duplex and grayscale; File > Print > Network printer sends to a printer by IP address over WS-Print or IPP (queried first, three-state options, per-job confirmation, status naming the printer, `CRAFT_PRINT_DENY` honoured); web browser printing | Counted under print |
+| Printers | System print with driver options | Desktop submits through craft-print with printer choice, copies, duplex and grayscale; File > Print > Network printer sends to a printer by IP address over WS-Print or IPP (queried first, three-state options, per-job confirmation, status naming the printer); web browser printing | Counted under print |
 
 ## Revision history
 

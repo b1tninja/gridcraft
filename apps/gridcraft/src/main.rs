@@ -198,7 +198,7 @@ fn services() -> Services {
         printers: Some(print::discover()),
         print_native: Some(print::submit()),
         #[cfg(feature = "network-print")]
-        network_print: Some(network_print::service(None, None, None)),
+        network_print: Some(network_print::service(None, None)),
         ..Default::default()
     }
 }

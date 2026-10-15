@@ -56,10 +56,13 @@ fn local_job(settings: Settings) -> craft_print::Job {
 }
 
 pub fn submit() -> Submit {
+    // A job's steps (spool job started, each page, completion or failure) go to the log, so a job
+    // that reached the queue and never printed can be traced afterwards.
+    let _ = craft_print::set_trace(|line| log::info!("print: {line}"));
     Box::new(|bytes, settings: Settings| {
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new().name("print-submit".into()).spawn(move || {
-            // The status names the printer: "Print job submitted: Office Laser".
+            // The status names the printer: "Print job sent to the print queue: Office Laser".
             let printer = settings.printer.clone();
             let job = local_job(settings);
             let result = craft_print::submit(&bytes, &job).map(|receipt| named_receipt(&printer, &receipt)).map_err(|error| error.to_string());

@@ -325,8 +325,12 @@ pub fn feedback(message: &Feedback, translate: impl Fn(&str) -> String) -> Strin
         Feedback::NoPrinters => translate("No printers found. Configure a system printer or export a PDF."),
         Feedback::DiscoveryFailed => translate("Printer discovery failed."),
         Feedback::Submitting => translate("Submitting print job…"),
-        Feedback::Submitted(receipt) if receipt.trim().is_empty() => translate("Print job submitted."),
-        Feedback::Submitted(receipt) => translate("Print job submitted: {receipt}").replace("{receipt}", receipt),
+        Feedback::Submitted(receipt) if receipt.trim().is_empty() => {
+            translate("Print job sent to the print queue. Check the queue if it does not print.")
+        }
+        Feedback::Submitted(receipt) => {
+            translate("Print job sent to the print queue: {receipt}. Check the queue if it does not print.").replace("{receipt}", receipt)
+        }
         Feedback::Failed(error) => translate("Print failed: {error}").replace("{error}", error),
         Feedback::WorkerStopped => translate("Print failed: the printing worker stopped."),
     }

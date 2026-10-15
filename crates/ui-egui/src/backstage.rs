@@ -224,6 +224,10 @@ pub fn show(app: &mut SheetApp, ui: &mut Ui) {
         out.close = true;
     }
     if let Some(page) = out.page {
+        // Arriving on Print clears the network destination's confirmation: it covers one print.
+        if page == Page::Print && bs.page != Page::Print {
+            app.network.state.dialog_opened();
+        }
         bs.page = page;
     }
     // A command run from a page may itself have opened (or replaced) the view; keep that.
@@ -708,15 +712,38 @@ fn print(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome)
     ui.horizontal_top(|ui| {
         ui.vertical(|ui| {
             ui.set_width(250.0);
-            if let Some(discover) = &app.services.printers {
-                crate::printing::show(&mut app.printing, ui, discover, |label| lang.tr(label).to_owned());
+            let has_network = app.services.network_print.is_some();
+            if has_network {
+                // Destination: the system's printers, or a printer on the network by its address.
+                let running = app.network.state.draft.running();
+                ui.add_enabled_ui(!running, |ui| {
+                    egui::ComboBox::from_id_salt("backstage_print_destination")
+                        .width(230.0)
+                        .selected_text(lang.tr(if app.network.selected { "Network printer" } else { "System printer" }))
+                        .show_ui(ui, |ui| {
+                            if ui.selectable_label(!app.network.selected, lang.tr("System printer")).clicked() {
+                                app.network.selected = false;
+                            }
+                            if ui.selectable_label(app.network.selected, lang.tr("Network printer")).clicked() {
+                                app.network.selected = true;
+                            }
+                        });
+                });
+                ui.add_space(8.0);
             }
-            let can_print = app.services.print_native.is_none() || app.printing.ready();
-            if ui.add_enabled_ui(can_print, |ui| square_button(ui, Icon::Print, lang.tr("Print"))).inner.clicked()
-                && app.commit_edit(0, 0, false, false)
-            {
-                app.print_now(params.clone());
-                out.close = app.services.print_native.is_none();
+            if app.network_selected() {
+                network_destination(app, ui, &params, pages.len(), page_media(&pages), lang);
+            } else {
+                if let Some(discover) = &app.services.printers {
+                    crate::printing::show(&mut app.printing, ui, discover, |label| lang.tr(label).to_owned());
+                }
+                let can_print = app.services.print_native.is_none() || app.printing.ready();
+                if ui.add_enabled_ui(can_print, |ui| square_button(ui, Icon::Print, lang.tr("Print"))).inner.clicked()
+                    && app.commit_edit(0, 0, false, false)
+                {
+                    app.print_now(params.clone());
+                    out.close = app.services.print_native.is_none();
+                }
             }
             ui.add_space(16.0);
             let scope = if bs.print_all { "Print Entire Workbook" } else { "Print Active Sheets" };
@@ -778,6 +805,34 @@ fn print(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome)
             });
         });
     });
+}
+
+/// The media size of the first previewed page (points), as a size name printers list.
+fn page_media(pages: &[Json]) -> Option<&'static str> {
+    let first = pages.first()?;
+    let size = |key: &str| first.get(key).and_then(Json::as_f64);
+    crate::printing::media_for_points(size("width")?, size("height")?)
+}
+
+/// The network-printer destination of the Print page: craft-ui's section (address, query, the
+/// printer's three-state options, the confirmation, the job's status) and the Print button.
+fn network_destination(app: &mut SheetApp, ui: &mut Ui, params: &Json, sheets: usize, media: Option<&'static str>, lang: crate::i18n::Language) {
+    let Some(net) = &app.services.network_print else { return };
+    let host = crate::printing::net::Host { validate: net.validate.as_ref(), query: &net.query, sheets_ok: sheets > 0, formats: net.formats };
+    let labels = crate::printing::network_labels(lang);
+    let response = ui.scope(|ui| {
+        ui.set_min_width(330.0);
+        app.network.state.show(ui, egui::Id::new("gridcraft_network_printer"), &host, &labels)
+    });
+    let response = response.inner;
+    ui.add_space(8.0);
+    let can_print = response.block.is_none();
+    if ui.add_enabled_ui(can_print, |ui| square_button(ui, Icon::Print, lang.tr("Print"))).inner.clicked() && app.commit_edit(0, 0, false, false) {
+        let pages = u32::try_from(sheets).ok();
+        if let Err(error) = app.print_network(params.clone(), pages, media) {
+            app.alert_text(error);
+        }
+    }
 }
 
 /// Most rows and columns one preview page draws (a page holds far fewer at any readable scale).

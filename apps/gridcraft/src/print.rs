@@ -25,10 +25,21 @@ pub fn finish_pending_jobs() {
     }
 }
 
+/// The spooler's receipt, led by the printer it went to (the receipt alone is often empty).
+fn named_receipt(printer: &str, receipt: &str) -> String {
+    match (printer.trim().is_empty(), receipt.trim().is_empty()) {
+        (_, true) => printer.to_owned(),
+        (true, false) => receipt.to_owned(),
+        (false, false) => format!("{printer}: {receipt}"),
+    }
+}
+
 pub fn submit() -> Submit {
     Box::new(|bytes, settings: Settings| {
         let (sender, receiver) = std::sync::mpsc::channel();
         let worker = std::thread::Builder::new().name("print-submit".into()).spawn(move || {
+            // The status names the printer: "Print job submitted: Office Laser".
+            let printer = settings.printer.clone();
             let job = craft_print::Job {
                 printer: Some(settings.printer),
                 copies: settings.copies.clamp(1, 999),
@@ -42,7 +53,8 @@ pub fn submit() -> Submit {
                 title: "GridCraft document".into(),
                 ..Default::default()
             };
-            let _ = sender.send(craft_print::submit(&bytes, &job).map_err(|error| error.to_string()));
+            let result = craft_print::submit(&bytes, &job).map(|receipt| named_receipt(&printer, &receipt)).map_err(|error| error.to_string());
+            let _ = sender.send(result);
         });
         if let Ok(worker) = worker {
             let mut jobs = JOBS.lock().unwrap_or_else(|poison| poison.into_inner());
@@ -56,6 +68,13 @@ pub fn submit() -> Submit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn the_receipt_names_the_printer() {
+        assert_eq!(named_receipt("Office Laser", ""), "Office Laser");
+        assert_eq!(named_receipt("Office Laser", "job 7"), "Office Laser: job 7");
+        assert_eq!(named_receipt("", "job 7"), "job 7");
+    }
+
     #[test]
     fn shutdown_waits_for_pending_submission_workers() {
         let (release, wait) = std::sync::mpsc::channel();

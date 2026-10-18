@@ -563,6 +563,7 @@ impl SheetApp {
     }
 
     fn submit_print(&mut self, mut params: Json) -> Result<Json, String> {
+        require_params_object(&params)?;
         if self.services.print_native.is_some() && !self.printing.ready() {
             return Err("Select an available printer in File > Print before submitting.".into());
         }
@@ -602,6 +603,7 @@ impl SheetApp {
     /// worker, following the job. Needs the ticked confirmation (craft-ui spends it); returns the
     /// reason it did not start otherwise. `pages` and `media` describe the sheets sent.
     pub fn print_network(&mut self, mut params: Json, pages: Option<u32>, media: Option<&str>) -> Result<(), String> {
+        require_params_object(&params)?;
         let Some(net) = &self.services.network_print else { return Err("Network printing is unavailable here.".into()) };
         if self.network.state.draft.block((net.validate)(&self.network.state.draft.normalized_url()).is_ok(), true, net.formats).is_some() {
             return Err("Query the printer and tick the confirmation before printing.".into());
@@ -1312,6 +1314,16 @@ impl SheetApp {
             return format!("{}R x {}C", cur.height(), cur.width());
         }
         sel.active.a1()
+    }
+}
+
+/// Print parameters are an object (`null` means none): the code adds keys to them, which would panic on
+/// any other JSON value.
+fn require_params_object(params: &Json) -> Result<(), String> {
+    if params.is_null() || params.is_object() {
+        Ok(())
+    } else {
+        Err("Print parameters must be an object.".into())
     }
 }
 

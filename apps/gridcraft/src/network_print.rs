@@ -359,7 +359,7 @@ fn run_job(
     let submitted = match printer.registry.submit_job_with_details(request, known) {
         Ok(submitted) => submitted,
         Err(e) if e.kind() == ErrorKind::Cancelled => {
-            return Ok(Report { outcome: Outcome::Canceled, printer: String::new(), sheets: 0, notes: Vec::new() });
+            return Ok(Report { outcome: Outcome::Canceled, printer: printer_name, sheets: 0, notes: Vec::new() });
         }
         Err(e) => return Err(failure(&e, false)),
     };

@@ -50,10 +50,30 @@ pub fn media_for_points(width: f64, height: f64) -> Option<&'static str> {
         (842.0, 1191.0, "iso_a3_297x420mm"),
         (595.0, 842.0, "iso_a4_210x297mm"),
         (420.0, 595.0, "iso_a5_148x210mm"),
+        (522.0, 756.0, "na_executive_7.25x10.5in"),
+        (709.0, 1001.0, "iso_b4_250x353mm"),
+        (499.0, 709.0, "iso_b5_176x250mm"),
     ]
     .into_iter()
     .find(|&(w, h, _)| near(short, w) && near(long, h))
     .map(|(_, _, token)| token)
+}
+
+/// The PWG 5101.1 `MediaSizeName` of a Page Setup paper name (spelled as the engine accepts it).
+pub fn media_for_paper(paper: &str) -> Option<&'static str> {
+    let name = paper.trim().to_ascii_lowercase().replace([' ', '-', '_'], "");
+    Some(match name.as_str() {
+        "letter" | "usletter" => "na_letter_8.5x11in",
+        "legal" | "uslegal" => "na_legal_8.5x14in",
+        "executive" => "na_executive_7.25x10.5in",
+        "tabloid" | "11x17" | "ledger" => "na_ledger_11x17in",
+        "a3" => "iso_a3_297x420mm",
+        "a4" => "iso_a4_210x297mm",
+        "a5" => "iso_a5_148x210mm",
+        "b4" => "iso_b4_250x353mm",
+        "b5" => "iso_b5_176x250mm",
+        _ => return None,
+    })
 }
 
 /// The wording of the network destination in the interface language. Unlisted strings fall back to
@@ -347,6 +367,22 @@ mod tests {
         assert_eq!(media_for_points(1224.0, 792.0), Some("na_ledger_11x17in"));
         assert_eq!(media_for_points(500.0, 500.0), None);
         assert_eq!(media_for_points(f64::NAN, 792.0), None);
+    }
+
+    /// Every paper Page Setup and Page Layout › Size offer has a media name, the same one its size gives.
+    #[test]
+    fn every_paper_size_has_a_media_name() {
+        let doc = gridcraft_engine::find_command("pageLayout.pageSetup").map(|c| c.params).unwrap_or_default();
+        let listed = doc.split("paper?: ").nth(1).and_then(|rest| rest.split(',').next()).expect("pageSetup lists its papers");
+        let mut papers: Vec<&str> = listed.split('|').map(str::trim).collect();
+        papers.extend(["Letter", "Legal", "Tabloid", "Executive", "A3", "A4", "A5"]);
+        for paper in papers {
+            let media = media_for_paper(paper).unwrap_or_else(|| panic!("{paper} has no media name"));
+            let (w, h) = gridcraft_engine::cmd::print::paper_size(paper);
+            assert_eq!(media_for_points(f64::from(w), f64::from(h)), Some(media), "{paper}");
+        }
+        assert_eq!(media_for_paper(" us letter "), Some("na_letter_8.5x11in"));
+        assert_eq!(media_for_paper("Napkin"), None);
     }
 
     #[test]

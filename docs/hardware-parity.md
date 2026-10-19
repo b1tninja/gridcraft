@@ -1,6 +1,6 @@
 # Hardware parity
 
-> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-15 · **Change:** minor (network printers: WS-Print and IPP through craft-print) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
+> **Last reviewed:** 2026-10-10 · **Last updated:** 2026-10-18 · **Change:** minor (network print jobs name the paper only when every page shares it) · **Target:** Microsoft Excel (Microsoft 365), Excel for Mac 16.113.4
 
 The hardware Excel uses, per platform, against GridCraft. Part of
 [target-app-parity.md](target-app-parity.md). **Hardware: ~40% ready, 25–40 h** (estimated).
@@ -20,6 +20,7 @@ The hardware Excel uses, per platform, against GridCraft. Part of
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-10-18 | minor | Network printer jobs name a paper size only when every printed page is on the same paper (a workbook of Letter and Legal sheets names none), from the sheet's Page Setup paper (Executive and B5 included) before the page size. A cancel that may have reached the printer keeps the request to check it. |
 | 2026-10-15 | minor | File > Print has one Printer list (the system queues, the default first, then Network printer…) instead of a System/Network switch. Grayscale (was Black and white) now makes the printed PDF and the preview gray (Rec. 709) as well as asking the driver for monochrome. Local jobs go on the queue's own paper, shrunk to fit. |
 | 2026-10-15 | minor | File > Print has a Network printer destination (craft-ui `printing::network` over craft-print's WS-Print and IPP backends, desktop only, `network-print` feature): address check, query, three-state options, one confirmation per job, tracked status naming the printer. Printers that list no PDF are refused (no PDF rasteriser to convert with). Needs a real network printer to validate. |
 | 2026-10-12 | minor | Desktop File > Print now discovers printers and submits PDF jobs through pinned craft-print with printer choice, copies, duplex and grayscale; browser printing and PDF export remain available. Remaining print parity includes page ranges and driver-specific tray/options UI; physical printer fidelity needs hardware validation. |

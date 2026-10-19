@@ -797,11 +797,19 @@ fn print(app: &mut SheetApp, ui: &mut Ui, bs: &mut Backstage, out: &mut Outcome)
     });
 }
 
-/// The media size of the first previewed page (points), as a size name printers list.
+/// The media size every previewed page prints on, as a size name printers list: each page's paper
+/// name, else its size in points (either orientation). Pages of different sizes name no media, so no
+/// page's size is imposed on the others.
 fn page_media(pages: &[Json]) -> Option<&'static str> {
-    let first = pages.first()?;
-    let size = |key: &str| first.get(key).and_then(Json::as_f64);
-    crate::printing::media_for_points(size("width")?, size("height")?)
+    let media = |page: &Json| {
+        page.get("paper").and_then(Json::as_str).and_then(crate::printing::media_for_paper).or_else(|| {
+            let size = |key: &str| page.get(key).and_then(Json::as_f64);
+            crate::printing::media_for_points(size("width")?, size("height")?)
+        })
+    };
+    let mut all = pages.iter().map(media);
+    let first = all.next()??;
+    all.all(|m| m == Some(first)).then_some(first)
 }
 
 /// The network-printer destination of the Print page: craft-ui's section (address, query, the
@@ -1158,5 +1166,21 @@ mod tests {
         assert_eq!((gray.r(), gray.g(), gray.b()), (71, 71, 71), "Rec. 709, the weights the PDF uses");
         assert_eq!(preview_colour(Color32::WHITE, true), Color32::WHITE);
         assert_eq!(preview_colour(Color32::BLACK, true), Color32::BLACK);
+    }
+
+    #[test]
+    fn a_network_job_names_a_media_only_when_every_page_shares_it() {
+        let letter = json!({"paper": "Letter", "width": 612.0, "height": 792.0});
+        let legal = json!({"paper": "Legal", "width": 612.0, "height": 1008.0});
+        let wide_letter = json!({"paper": "Letter", "orientation": "landscape", "width": 792.0, "height": 612.0});
+        assert_eq!(page_media(&[letter.clone(), legal.clone()]), None, "Letter and Legal sheets in one workbook");
+        assert_eq!(page_media(&[legal, letter.clone()]), None);
+        assert_eq!(page_media(&[letter.clone(), wide_letter]), Some("na_letter_8.5x11in"), "landscape Letter is Letter");
+        let executive = json!({"paper": "Executive", "width": 522.0, "height": 756.0});
+        assert_eq!(page_media(&[executive]), Some("na_executive_7.25x10.5in"));
+        // An unnamed or unknown paper falls back to the page's size.
+        assert_eq!(page_media(&[json!({"paper": "Napkin", "width": 595.28, "height": 841.89})]), Some("iso_a4_210x297mm"));
+        assert_eq!(page_media(&[letter, json!({"width": 500.0, "height": 500.0})]), None);
+        assert_eq!(page_media(&[]), None);
     }
 }

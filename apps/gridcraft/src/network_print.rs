@@ -208,7 +208,8 @@ fn query_printer(transport: Option<Transport>, ctx: Option<egui::Context>, queri
     Box::new(move |address: &str| {
         let (tx, rx) = mpsc::channel();
         let (address, transport, ctx, queried) = (address.to_owned(), transport.clone(), ctx.clone(), Arc::clone(&queried));
-        std::thread::spawn(move || {
+        let failed = tx.clone();
+        let worker = std::thread::Builder::new().name("network-print-query".into()).spawn(move || {
             let result = match open(&address, transport) {
                 Ok(printer) => printer
                     .registry
@@ -224,6 +225,9 @@ fn query_printer(transport: Option<Transport>, ctx: Option<egui::Context>, queri
             let _ = tx.send(result);
             repaint(&ctx);
         });
+        if let Err(e) = worker {
+            let _ = failed.send(Err(Failure::new(FailureKind::Other, e.to_string())));
+        }
         rx
     })
 }
@@ -328,12 +332,16 @@ fn send_job(
         let (address, transport, ctx) = (address.to_owned(), transport.clone(), ctx.clone());
         let (name, pdf, worker_cancel) = (name.clone(), Arc::clone(&pdf), cancel.clone());
         let known = lock(&queried).as_ref().filter(|(a, _)| *a == address).map(|(_, d)| d.clone());
-        std::thread::spawn(move || {
+        let failed = result_tx.clone();
+        let worker = std::thread::Builder::new().name("network-print-job".into()).spawn(move || {
             let (job, options) = options(&request, &name);
             let result = run_job(&address, transport, (job, options), &pdf, known, confirmed, &worker_cancel, &update_tx, &ctx);
             let _ = result_tx.send(result);
             repaint(&ctx);
         });
+        if let Err(e) = worker {
+            let _ = failed.send(Err(Failure::new(FailureKind::Other, e.to_string())));
+        }
         JobHandle::new(result_rx, Box::new(move || cancel.cancel())).with_updates(update_rx)
     })
 }
@@ -358,10 +366,7 @@ fn run_job(
     // Phase one: the printer accepts the document. A cancel before that sends nothing.
     let submitted = match printer.registry.submit_job_with_details(request, known) {
         Ok(submitted) => submitted,
-        Err(e) if e.kind() == ErrorKind::Cancelled => {
-            return Ok(Report { outcome: Outcome::Canceled, printer: printer_name, sheets: 0, notes: Vec::new() });
-        }
-        Err(e) => return Err(failure(&e, false)),
+        Err(e) => return not_accepted(&e, printer_name),
     };
     let notes = submitted.warnings.clone();
     let _ = updates.send(JobUpdate::Accepted(Progress { notes: notes.clone(), ..Progress::default() }));
@@ -387,6 +392,16 @@ fn run_job(
         None => WatchOutcome::NoStatus,
     };
     Ok(report(&outcome, &printer_name, &notes))
+}
+
+/// How a submission the printer did not accept ends: a cancel that sent nothing is a canceled
+/// job; any other error, a cancel that may have reached the printer included, is a failure that keeps
+/// the request to check the printer.
+fn not_accepted(e: &PrintError, printer: String) -> Result<Report, Failure> {
+    if e.kind() == ErrorKind::Cancelled && !e.outcome_unknown() {
+        return Ok(Report { outcome: Outcome::Canceled, printer, sheets: 0, notes: Vec::new() });
+    }
+    Err(failure(e, false))
 }
 
 /// A job that failed before it started: the handle already holds the failure.
@@ -552,6 +567,19 @@ mod tests {
         summary_of(&network, ADDRESS).expect("queried");
         let (_, result) = finish((network.send)(job(true))(ADDRESS, Request::default()));
         assert_eq!(result.expect("accepted").outcome, Outcome::Aborted);
+    }
+
+    #[test]
+    fn a_cancel_that_may_have_reached_the_printer_keeps_the_warning() {
+        use craft_print::RetrySafety;
+        let clean = PrintError::new(ErrorKind::Cancelled, "the print job was cancelled before it started");
+        assert_eq!(not_accepted(&clean, "Office".into()).expect("canceled").outcome, Outcome::Canceled);
+        let unsure = PrintError::new(ErrorKind::Cancelled, "cancelled while sending").with_safety(RetrySafety::OutcomeUnknown);
+        let failure = not_accepted(&unsure, "Office".into()).expect_err("not a clean cancel");
+        assert!(failure.outcome_unknown, "the person is asked to check the printer: {failure:?}");
+        let labels = gridcraft_ui_egui::printing::network_labels(gridcraft_ui_egui::i18n::Language::En);
+        let text = gridcraft_ui_egui::printing::network_notice(&net::JobView::Failed(failure), &labels).expect("a sentence");
+        assert!(text.contains("Check the printer before sending again"), "{text}");
     }
 
     /// The Print page's whole path: the app builds the PDF of the workbook, craft-ui starts the job

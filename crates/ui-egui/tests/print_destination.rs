@@ -24,7 +24,8 @@ fn app_with(printers: &[(&str, bool)], network: bool) -> SheetApp {
     let mut app = SheetApp::new(session, Services::default());
     app.run("cell.set", json!({"cell": "A1", "input": "A sheet to print"})).unwrap();
     app.run("home.fillColor", json!({"range": "A1", "color": "#DC1E28"})).unwrap();
-    let list: Vec<Printer> = printers.iter().map(|(name, default)| Printer { name: (*name).into(), default: *default }).collect();
+    let list: Vec<Printer> =
+        printers.iter().map(|(name, default)| Printer { name: (*name).into(), label: String::new(), default: *default }).collect();
     app.services.printers = Some(Box::new(move || {
         let (sender, receiver) = std::sync::mpsc::channel();
         sender.send(list.clone()).unwrap();

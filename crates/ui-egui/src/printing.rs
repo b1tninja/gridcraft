@@ -51,8 +51,19 @@ pub fn media_for_points(width: f64, height: f64) -> Option<&'static str> {
         (595.0, 842.0, "iso_a4_210x297mm"),
         (420.0, 595.0, "iso_a5_148x210mm"),
         (522.0, 756.0, "na_executive_7.25x10.5in"),
+        (297.6, 419.5, "iso_a6_105x148mm"),
+        (729.0, 1032.0, "jis_b4_257x364mm"),
+        (516.0, 729.0, "jis_b5_182x257mm"),
+        (363.0, 516.0, "jis_b6_128x182mm"),
         (709.0, 1001.0, "iso_b4_250x353mm"),
         (499.0, 709.0, "iso_b5_176x250mm"),
+        (354.0, 499.0, "iso_b6_125x176mm"),
+        (283.5, 419.5, "jpn_hagaki_100x148mm"),
+        (419.5, 567.0, "jpn_oufuku_148x200mm"),
+        (340.0, 666.0, "jpn_chou3_120x235mm"),
+        (255.0, 581.0, "jpn_chou4_90x205mm"),
+        (680.0, 941.0, "jpn_kaku2_240x332mm"),
+        (612.0, 785.0, "jpn_kaku3_216x277mm"),
     ]
     .into_iter()
     .find(|&(w, h, _)| near(short, w) && near(long, h))
@@ -61,7 +72,7 @@ pub fn media_for_points(width: f64, height: f64) -> Option<&'static str> {
 
 /// The PWG 5101.1 `MediaSizeName` of a Page Setup paper name (spelled as the engine accepts it).
 pub fn media_for_paper(paper: &str) -> Option<&'static str> {
-    let name = paper.trim().to_ascii_lowercase().replace([' ', '-', '_'], "");
+    let name = paper.trim().to_ascii_lowercase().replace([' ', '-', '_', '(', ')'], "");
     Some(match name.as_str() {
         "letter" | "usletter" => "na_letter_8.5x11in",
         "legal" | "uslegal" => "na_legal_8.5x14in",
@@ -70,8 +81,20 @@ pub fn media_for_paper(paper: &str) -> Option<&'static str> {
         "a3" => "iso_a3_297x420mm",
         "a4" => "iso_a4_210x297mm",
         "a5" => "iso_a5_148x210mm",
-        "b4" => "iso_b4_250x353mm",
-        "b5" => "iso_b5_176x250mm",
+        "a6" => "iso_a6_105x148mm",
+        // B4/B5/B6 are the JIS sizes (as in the engine); the ISO series is spelled out.
+        "b4" | "b4jis" => "jis_b4_257x364mm",
+        "b5" | "b5jis" => "jis_b5_182x257mm",
+        "b6" | "b6jis" => "jis_b6_128x182mm",
+        "b4iso" => "iso_b4_250x353mm",
+        "b5iso" => "iso_b5_176x250mm",
+        "b6iso" => "iso_b6_125x176mm",
+        "japanesepostcard" | "postcard" => "jpn_hagaki_100x148mm",
+        "japanesedoublepostcard" | "doublepostcard" => "jpn_oufuku_148x200mm",
+        "japaneseenvelope#3" | "chou#3" => "jpn_chou3_120x235mm",
+        "japaneseenvelope#4" | "chou#4" => "jpn_chou4_90x205mm",
+        "japaneseenvelopekaku#2" | "kaku#2" => "jpn_kaku2_240x332mm",
+        "japaneseenvelopekaku#3" | "kaku#3" => "jpn_kaku3_216x277mm",
         _ => return None,
     })
 }
@@ -386,7 +409,7 @@ mod tests {
     fn every_paper_size_has_a_media_name() {
         let doc = gridcraft_engine::find_command("pageLayout.pageSetup").map(|c| c.params).unwrap_or_default();
         let listed = doc.split("paper?: ").nth(1).and_then(|rest| rest.split(',').next()).expect("pageSetup lists its papers");
-        let mut papers: Vec<&str> = listed.split('|').map(str::trim).collect();
+        let mut papers: Vec<&str> = listed.split('|').map(|p| p.split(" (B4/").next().unwrap_or(p).trim()).collect();
         papers.extend(["Letter", "Legal", "Tabloid", "Executive", "A3", "A4", "A5"]);
         for paper in papers {
             let media = media_for_paper(paper).unwrap_or_else(|| panic!("{paper} has no media name"));

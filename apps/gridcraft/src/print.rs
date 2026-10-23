@@ -19,12 +19,48 @@ pub fn discover() -> Discover {
 // let process exit kill PowerShell/CUPS before it hands the job to the spooler.
 static JOBS: std::sync::Mutex<Vec<std::thread::JoinHandle<()>>> = std::sync::Mutex::new(Vec::new());
 
+/// How long application shutdown waits for submission workers in total. Long enough for a normal
+/// handover (PowerShell or CUPS taking the job), short enough that a stalled driver or spooler
+/// cannot keep a closed window's process alive.
+pub const SHUTDOWN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(25);
+
+/// Waits for pending submission workers for at most [`SHUTDOWN_DEADLINE`].
 pub fn finish_pending_jobs() {
+    finish_pending_jobs_within(SHUTDOWN_DEADLINE);
+}
+
+/// Waits up to `deadline` in total (not per worker) for the pending submission workers. A worker
+/// that finishes in time is joined; one still running at the deadline is left behind and logged,
+/// never waited on, so shutdown cannot hang.
+pub fn finish_pending_jobs_within(deadline: std::time::Duration) {
     let workers = std::mem::take(&mut *JOBS.lock().unwrap_or_else(|poison| poison.into_inner()));
-    for worker in workers {
-        if worker.join().is_err() {
-            log::error!("the print worker stopped unexpectedly during shutdown");
+    for worker in join_within(workers, deadline) {
+        let name = worker.thread().name().unwrap_or("print worker").to_owned();
+        // The handover may or may not have reached the queue: do not claim either way.
+        log::warn!(
+            "{name} was still running when the application shut down; its job may or may not have reached the print queue, so check the printer's queue before printing again"
+        );
+    }
+}
+
+/// Joins every worker that finishes before `deadline` (polling `is_finished`, so a join never blocks)
+/// and returns the ones still running.
+#[allow(clippy::disallowed_methods)] // the desktop app (native only): wasm never runs it
+fn join_within(mut workers: Vec<std::thread::JoinHandle<()>>, deadline: std::time::Duration) -> Vec<std::thread::JoinHandle<()>> {
+    let end = std::time::Instant::now() + deadline;
+    loop {
+        let (done, pending): (Vec<_>, Vec<_>) = workers.into_iter().partition(|worker| worker.is_finished());
+        for worker in done {
+            if worker.join().is_err() {
+                log::error!("the print worker stopped unexpectedly during shutdown");
+            }
         }
+        workers = pending;
+        let now = std::time::Instant::now();
+        if workers.is_empty() || now >= end {
+            return workers;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10).min(end - now));
     }
 }
 
@@ -115,5 +151,35 @@ mod tests {
         shutdown.join().unwrap();
         completion.recv().unwrap();
         assert!(JOBS.lock().unwrap().is_empty(), "workers were joined before shutdown returned");
+    }
+
+    #[test]
+    #[allow(clippy::disallowed_methods)] // native-only test: reads the clock
+    fn a_stalled_worker_cannot_hold_shutdown_past_the_deadline() {
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let stalled = std::thread::spawn(move || {
+            let _ = wait.recv();
+        });
+        let (done_sender, done_receiver) = std::sync::mpsc::channel();
+        let finished = std::thread::spawn(move || done_sender.send(()).unwrap());
+        done_receiver.recv().unwrap();
+        while !finished.is_finished() {
+            std::thread::yield_now();
+        }
+        let started = std::time::Instant::now();
+        let left = join_within(vec![stalled, finished], std::time::Duration::from_millis(200));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the wait is bounded by the deadline");
+        assert_eq!(left.len(), 1, "only the stalled worker is left behind; the completed handover was joined");
+        assert!(!left[0].is_finished());
+        release.send(()).unwrap();
+        for worker in left {
+            worker.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn a_worker_finishing_inside_the_deadline_is_joined() {
+        let worker = std::thread::spawn(|| std::thread::sleep(std::time::Duration::from_millis(50)));
+        assert!(join_within(vec![worker], std::time::Duration::from_secs(10)).is_empty());
     }
 }

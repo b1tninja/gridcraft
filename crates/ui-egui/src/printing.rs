@@ -173,6 +173,17 @@ pub fn network_notice(view: &net::JobView, labels: &net::Labels<'_>) -> Option<S
     }
 }
 
+/// What a printer is called on screen: its label (the system's description) when it has one, else its
+/// name. The name stays the selection key.
+fn row_text(printer: &Printer) -> &str {
+    if printer.label.trim().is_empty() { &printer.name } else { &printer.label }
+}
+
+/// The selected printer's on-screen text (its label, else its name; the name itself if it is not listed).
+fn shown_name(printers: &[Printer], selected: &str) -> String {
+    printers.iter().find(|printer| printer.name == selected).map_or_else(|| selected.to_owned(), |printer| row_text(printer).to_owned())
+}
+
 /// The Print page's printer controls: ONE Printer list holding the system's queues (the default
 /// first and marked) and, where the host can send to the network, a final "Network printer…" entry
 /// (`network` is that entry's selected flag). Choosing a queue clears the flag; choosing the entry sets
@@ -201,7 +212,7 @@ pub fn show(
             } else if state.settings.printer.is_empty() {
                 translate("Select a printer")
             } else {
-                state.settings.printer.clone()
+                shown_name(&state.printers, &state.settings.printer)
             };
             let mut order: Vec<&Printer> = state.printers.iter().collect();
             order.sort_by_key(|printer| !printer.default);
@@ -212,7 +223,8 @@ pub fn show(
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
                     for printer in order {
-                        let text = if printer.default { format!("{} ({})", printer.name, translate("default")) } else { printer.name.clone() };
+                        let text =
+                            if printer.default { format!("{} ({})", row_text(printer), translate("default")) } else { row_text(printer).to_owned() };
                         if ui.selectable_label(!network_chosen && state.settings.printer == printer.name, text).clicked() {
                             chosen = Some(printer.name.clone());
                         }
@@ -396,6 +408,19 @@ mod tests {
         let text = network_notice(&failed, &labels).expect("a sentence");
         assert!(text.starts_with("Couldn't reach the printer: timed out") && text.contains("Check the printer before sending again"), "{text}");
         assert_eq!(network_notice(&net::JobView::Idle, &labels), None);
+    }
+
+    #[test]
+    fn a_printer_shows_its_label_or_else_its_name() {
+        let printers = vec![
+            Printer { name: "HP_LJ_4".into(), label: "Front Desk Laser".into(), default: false },
+            Printer { name: "Plain".into(), label: "  ".into(), default: false },
+        ];
+        assert_eq!(row_text(&printers[0]), "Front Desk Laser");
+        assert_eq!(row_text(&printers[1]), "Plain");
+        assert_eq!(shown_name(&printers, "HP_LJ_4"), "Front Desk Laser");
+        assert_eq!(shown_name(&printers, "Plain"), "Plain");
+        assert_eq!(shown_name(&printers, "Gone"), "Gone");
     }
 
     #[test]

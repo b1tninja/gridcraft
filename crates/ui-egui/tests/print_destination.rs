@@ -70,6 +70,30 @@ fn one_printer_list_holds_the_queues_and_the_network_entry() {
 }
 
 #[test]
+fn a_queue_shows_its_label_else_its_name_and_selecting_stores_the_name() {
+    let mut app = app_with(&[], false);
+    let list = vec![
+        Printer { name: "HP_LJ_4".into(), label: "Front Desk Laser".into(), default: false },
+        Printer { name: "Plain Queue".into(), label: String::new(), default: false },
+    ];
+    app.services.printers = Some(Box::new(move || {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        sender.send(list.clone()).unwrap();
+        receiver
+    }));
+    let mut harness = harness(app);
+    open_printer_list(&mut harness);
+    assert!(harness.query_by_label("HP_LJ_4").is_none(), "the label replaces the name in the row");
+    assert!(harness.query_by_label("Plain Queue").is_some(), "no label: the name");
+    harness.get_by_label("Front Desk Laser").click();
+    harness.run_steps(4);
+    assert_eq!(harness.state().printing.settings.printer, "HP_LJ_4", "the name stays the selection key");
+    let combo = harness.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Printer");
+    let shown = combo.accesskit_node().value().or_else(|| combo.accesskit_node().label()).unwrap_or_default();
+    assert_eq!(shown, "Front Desk Laser", "the selected text shows the label");
+}
+
+#[test]
 fn choosing_the_network_entry_shows_the_network_section() {
     let app = app_with(&[("Office Laser", true)], true);
     let mut harness = harness(app);

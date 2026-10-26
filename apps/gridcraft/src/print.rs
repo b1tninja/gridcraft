@@ -1,6 +1,7 @@
 //! Desktop spooler adapter. Discovery and submission never run on the UI thread.
 use gridcraft_ui_egui::printing::{Discover, Duplex, Printer, Settings, Submit};
 
+/// Returns a printer-discovery closure that enumerates `craft_print::printers()` on a named background thread and sends the mapped list through a channel.
 pub fn discover() -> Discover {
     Box::new(|| {
         let (sender, receiver) = std::sync::mpsc::channel();
@@ -33,7 +34,7 @@ pub fn finish_pending_jobs() {
 /// that finishes in time is joined; one still running at the deadline is left behind and logged,
 /// never waited on, so shutdown cannot hang.
 pub fn finish_pending_jobs_within(deadline: std::time::Duration) {
-    let workers = std::mem::take(&mut *JOBS.lock().unwrap_or_else(|poison| poison.into_inner()));
+    let workers = std::mem::take(&mut *JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
     for worker in join_within(workers, deadline) {
         let name = worker.thread().name().unwrap_or("print worker").to_owned();
         // The handover may or may not have reached the queue: do not claim either way.
@@ -108,7 +109,7 @@ pub fn submit() -> Submit {
             let _ = sender.send(result);
         });
         if let Ok(worker) = worker {
-            let mut jobs = JOBS.lock().unwrap_or_else(|poison| poison.into_inner());
+            let mut jobs = JOBS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             jobs.retain(|job| !job.is_finished());
             jobs.push(worker);
         }

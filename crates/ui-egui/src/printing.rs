@@ -1,6 +1,7 @@
 //! Localized print-page wording around the shared, backend-independent controls.
 pub use craft_ui::capability::Capability;
 pub use craft_ui::printing::network as net;
+use craft_ui::printing::shown_names;
 pub use craft_ui::printing::{Discover, Duplex, Feedback, Printer, Settings, State, Submit};
 
 use crate::i18n::Language;
@@ -196,17 +197,6 @@ pub fn network_notice(view: &net::JobView, labels: &net::Labels<'_>) -> Option<S
     }
 }
 
-/// What a printer is called on screen: its label (the system's description) when it has one, else its
-/// name. The name stays the selection key.
-fn row_text(printer: &Printer) -> &str {
-    if printer.label.trim().is_empty() { &printer.name } else { &printer.label }
-}
-
-/// The selected printer's on-screen text (its label, else its name; the name itself if it is not listed).
-fn shown_name(printers: &[Printer], selected: &str) -> String {
-    printers.iter().find(|printer| printer.name == selected).map_or_else(|| selected.to_owned(), |printer| row_text(printer).to_owned())
-}
-
 /// The Print page's printer controls: ONE Printer list holding the system's queues (the default
 /// first and marked) and, where the host can send to the network, a final "Network printer…" entry
 /// (`network` is that entry's selected flag). Choosing a queue clears the flag; choosing the entry sets
@@ -224,7 +214,7 @@ pub fn show(
         state.refresh(discover);
     }
     state.poll(ui.ctx());
-    ui.push_id(egui::Id::new("gridcraft_print_settings"), |ui| {
+    ui.push_id(egui::Id::unique("gridcraft_print_settings"), |ui| {
         ui.add_enabled_ui(!state.busy() && !locked, |ui| {
             let width = ui.available_width().clamp(32.0, 230.0);
             let network_chosen = network.as_deref().is_some_and(|chosen| *chosen);
@@ -235,19 +225,26 @@ pub fn show(
             } else if state.settings.printer.is_empty() {
                 translate("Select a printer")
             } else {
-                shown_name(&state.printers, &state.settings.printer)
+                let names = shown_names(&state.printers);
+                state
+                    .printers
+                    .iter()
+                    .zip(&names)
+                    .find(|(printer, _)| printer.name == state.settings.printer)
+                    .map_or_else(|| state.settings.printer.clone(), |(_, text)| text.clone())
             };
-            let mut order: Vec<&Printer> = state.printers.iter().collect();
-            order.sort_by_key(|printer| !printer.default);
+            // Printers that share a label are told apart (the shared list's rule).
+            let names = shown_names(&state.printers);
+            let mut order: Vec<(&Printer, &String)> = state.printers.iter().zip(&names).collect();
+            order.sort_by_key(|(printer, _)| !printer.default);
             let mut chosen = None;
             egui::ComboBox::from_id_salt("printer")
                 .width(width)
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(shown)
                 .show_ui(ui, |ui| {
-                    for printer in order {
-                        let text =
-                            if printer.default { format!("{} ({})", row_text(printer), translate("default")) } else { row_text(printer).to_owned() };
+                    for (printer, shown) in order {
+                        let text = if printer.default { format!("{shown} ({})", translate("default")) } else { shown.clone() };
                         if ui.selectable_label(!network_chosen && state.settings.printer == printer.name, text).clicked() {
                             chosen = Some(printer.name.clone());
                         }
@@ -431,19 +428,6 @@ mod tests {
         let text = network_notice(&failed, &labels).expect("a sentence");
         assert!(text.starts_with("Couldn't reach the printer: timed out") && text.contains("Check the printer before sending again"), "{text}");
         assert_eq!(network_notice(&net::JobView::Idle, &labels), None);
-    }
-
-    #[test]
-    fn a_printer_shows_its_label_or_else_its_name() {
-        let printers = vec![
-            Printer { name: "HP_LJ_4".into(), label: "Front Desk Laser".into(), default: false },
-            Printer { name: "Plain".into(), label: "  ".into(), default: false },
-        ];
-        assert_eq!(row_text(&printers[0]), "Front Desk Laser");
-        assert_eq!(row_text(&printers[1]), "Plain");
-        assert_eq!(shown_name(&printers, "HP_LJ_4"), "Front Desk Laser");
-        assert_eq!(shown_name(&printers, "Plain"), "Plain");
-        assert_eq!(shown_name(&printers, "Gone"), "Gone");
     }
 
     #[test]

@@ -238,7 +238,7 @@ pub fn show(
             let mut order: Vec<(&Printer, &String)> = state.printers.iter().zip(&names).collect();
             order.sort_by_key(|(printer, _)| !printer.default);
             let mut chosen = None;
-            egui::ComboBox::from_id_salt("printer")
+            craft_ui::ComboBox::from_id_salt("printer")
                 .width(width)
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(shown)
@@ -286,7 +286,7 @@ pub fn show(
                 (Some(Duplex::ShortEdge), short_edge.as_str()),
             ];
             let duplex_label = ui.label(translate("Two-sided printing"));
-            egui::ComboBox::from_id_salt("duplex")
+            craft_ui::ComboBox::from_id_salt("duplex")
                 .width(width)
                 .wrap_mode(egui::TextWrapMode::Truncate)
                 .selected_text(choices.iter().find(|(value, _)| *value == state.settings.duplex).map_or(default.as_str(), |(_, text)| *text))

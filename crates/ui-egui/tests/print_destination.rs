@@ -144,7 +144,8 @@ fn colours(pdf: &[u8]) -> Vec<[String; 3]> {
 
 #[test]
 fn grayscale_prints_a_gray_pdf_and_the_preview_follows_the_box() {
-    let sent: Rc<RefCell<Vec<(Vec<u8>, bool)>>> = Rc::default();
+    type Sent = Rc<RefCell<Vec<(Vec<u8>, bool)>>>;
+    let sent: Sent = Rc::default();
     let mut app = app_with(&[("Office Laser", true)], false);
     let seen = sent.clone();
     app.services.print_native = Some(Box::new(move |bytes, settings| {
